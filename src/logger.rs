@@ -141,6 +141,7 @@ async fn body_to_string(body: Full<Bytes>) -> io::Result<String> {
 #[derive(Debug)]
 pub enum LockableWriter {
     Stdout(io::Stdout),
+    #[allow(dead_code)] // for tests
     BufWriter(Arc<Mutex<BufWriter<Vec<u8>>>>),
 }
 
