@@ -47,7 +47,7 @@ async fn main() {
         .expect("Unable to resolve target address")[0];
 
     let log_sender = match config.logger {
-        LoggerType::Vscode => log_channel(VSCodeRestLogger::new(io::stdout())),
+        LoggerType::Vscode => log_channel(VSCodeRestLogger::from_stdout(io::stdout())),
     };
     let logger = ReplayLogger::new(log_sender, target_address);
 

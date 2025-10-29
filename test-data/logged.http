@@ -1,0 +1,21 @@
+
+###
+
+GET http://example.com/test
+content-type: application/json
+
+{
+  "key": "value"
+}
+
+### Response ###
+#
+# Status Code: 200 OK
+# Response Headers:
+#   content-type: application/json
+#
+# Body:
+# {
+#   "response_key": "response_value"
+# }
+#
