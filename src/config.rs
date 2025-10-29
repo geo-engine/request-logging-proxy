@@ -13,7 +13,7 @@ pub struct Config {
     #[arg(long, default_value_t = 8123, env = "PORT")]
     pub port: u16,
 
-    /// The type of logger to use (e.g., "console", "file")
+    /// The type of logger to use (e.g., "vscode")
     #[arg(long, default_value_t = LoggerType::Vscode, env = "LOGGER")]
     pub logger: LoggerType,
 }
