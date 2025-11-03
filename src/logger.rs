@@ -1,10 +1,15 @@
+use anyhow::Context;
 use bytes::Bytes;
+use flate2::read::GzDecoder;
+use http::HeaderValue;
+use http::header::CONTENT_ENCODING;
 use http_body_util::{BodyExt, Full};
 use serde_json::Value;
-use std::io::Write;
 use std::io::{self, BufWriter};
+use std::io::{Read, Write};
 use std::sync::{Arc, Mutex, MutexGuard};
 
+#[derive(Debug)]
 pub struct LogEntry {
     pub request: hyper::Request<Full<Bytes>>,
     pub response: hyper::Response<Full<Bytes>>,
@@ -12,7 +17,7 @@ pub struct LogEntry {
 
 #[async_trait::async_trait]
 pub trait RequestResponseLogger: Send + std::fmt::Debug {
-    async fn log_request_response(&mut self, entry: LogEntry) -> io::Result<()>;
+    async fn log_request_response(&mut self, entry: LogEntry) -> anyhow::Result<()>;
 }
 
 /// A logger that outputs request and response details to VSCode's REST log format.
@@ -26,11 +31,21 @@ impl RequestResponseLogger for VSCodeRestLogger {
     async fn log_request_response(
         &mut self,
         LogEntry { request, response }: LogEntry,
-    ) -> io::Result<()> {
+    ) -> anyhow::Result<()> {
         let (request_header, request_body) = request.into_parts();
-        let request_body = body_to_string(request_body).await?;
+        let request_body = body_to_string(
+            request_body,
+            ContentDecoder::try_from(request_header.headers.get(CONTENT_ENCODING))?,
+        )
+        .await
+        .context("Failed to decode request body")?;
         let (response_header, response_body) = response.into_parts();
-        let response_body = body_to_string(response_body).await?;
+        let response_body = body_to_string(
+            response_body,
+            ContentDecoder::try_from(response_header.headers.get(CONTENT_ENCODING))?,
+        )
+        .await
+        .context("failed to decode response body")?;
         let mut w = self.writer.lock()?;
         Self::log_request(&mut w, request_header, request_body)?;
         Self::log_response(&mut w, response_header, response_body)?;
@@ -58,7 +73,7 @@ impl VSCodeRestLogger {
         writer: &mut W,
         header: http::request::Parts,
         body: String,
-    ) -> io::Result<()> {
+    ) -> anyhow::Result<()> {
         writeln!(
             writer,
             "\n\
@@ -92,7 +107,7 @@ impl VSCodeRestLogger {
         writer: &mut W,
         header: http::response::Parts,
         body: String,
-    ) -> io::Result<()> {
+    ) -> anyhow::Result<()> {
         writeln!(
             writer,
             "\n\
@@ -129,13 +144,60 @@ impl VSCodeRestLogger {
     }
 }
 
-async fn body_to_string(body: Full<Bytes>) -> io::Result<String> {
+async fn body_to_string(
+    body: Full<Bytes>,
+    content_encoding: ContentDecoder,
+) -> anyhow::Result<String> {
     let collected = body
         .collect()
         .await
         .map_err(|e| io::Error::other(format!("Failed to collect body: {e}")))?;
-    String::from_utf8(collected.to_bytes().to_vec())
-        .map_err(|e| io::Error::other(format!("Failed to convert body to string: {e}")))
+    let bytes = collected.to_bytes();
+
+    content_encoding
+        .decode(&bytes)
+        .with_context(|| format!("Failed to decode body: {}", String::from_utf8_lossy(&bytes)))
+}
+
+enum ContentDecoder {
+    None,
+    Gzip,
+}
+
+impl TryFrom<Option<&HeaderValue>> for ContentDecoder {
+    type Error = anyhow::Error;
+
+    fn try_from(value: Option<&HeaderValue>) -> Result<Self, Self::Error> {
+        match value {
+            Some(header_value) => match header_value.to_str() {
+                Ok("gzip") => Ok(ContentDecoder::Gzip),
+                _ => anyhow::bail!("Unsupported content encoding: {header_value:?}"),
+            },
+            None => Ok(ContentDecoder::None),
+        }
+    }
+}
+
+impl ContentDecoder {
+    fn decode(&self, data: &[u8]) -> anyhow::Result<String> {
+        if data.is_empty() {
+            return Ok(String::new());
+        }
+
+        match self {
+            ContentDecoder::None => {
+                String::from_utf8(data.to_vec()).context("Failed to convert body to string")
+            }
+            ContentDecoder::Gzip => {
+                let mut decoder = GzDecoder::new(data);
+                let mut decoded_data = String::new();
+                decoder
+                    .read_to_string(&mut decoded_data)
+                    .context("Failed to decode gzip data")?;
+                Ok(decoded_data)
+            }
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -146,7 +208,7 @@ pub enum LockableWriter {
 }
 
 impl LockableWriter {
-    pub fn lock<'w>(&'w mut self) -> io::Result<LockableWriterGuard<'w>> {
+    pub fn lock<'w>(&'w mut self) -> anyhow::Result<LockableWriterGuard<'w>> {
         match self {
             LockableWriter::Stdout(stdout) => Ok(LockableWriterGuard::Stdout(stdout.lock())),
             LockableWriter::BufWriter(mutex) => {
