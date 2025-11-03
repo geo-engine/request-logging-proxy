@@ -6,6 +6,9 @@ authors = ["Christian Beilschmidt <christian.beilschmidt@geoengine.de>"]
 description = "A simple HTTP proxy that logs requests and responses"
 license-file = "LICENSE"
 repository = "https://github.com/geo-engine/request-logging-proxy"
+keywords = ["http", "proxy", "logging"]
+categories = ["command-line-utilities", "development-tools::debugging", "network-programming", "web-programming"]
+exclude = [".github/*", "target/*"]
 
 # configure default clippy lints
 [workspace.lints.clippy]
