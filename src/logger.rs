@@ -20,6 +20,24 @@ pub trait RequestResponseLogger: Send + std::fmt::Debug {
     async fn log_request_response(&mut self, entry: LogEntry) -> anyhow::Result<()>;
 }
 
+/// A logger that does not forward outputs requests and responses.
+#[derive(Debug)]
+pub struct DevNullLogger;
+
+#[async_trait::async_trait]
+impl RequestResponseLogger for DevNullLogger {
+    async fn log_request_response(
+        &mut self,
+        LogEntry {
+            request: _,
+            response: _,
+        }: LogEntry,
+    ) -> anyhow::Result<()> {
+        // Do nothing with the request and response
+        Ok(())
+    }
+}
+
 /// A logger that outputs request and response details to VSCode's REST log format.
 #[derive(Debug)]
 pub struct VSCodeRestLogger {

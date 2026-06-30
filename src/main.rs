@@ -13,7 +13,7 @@ use tokio::{
     sync::mpsc::{Sender, channel},
 };
 
-use crate::logger::{LogEntry, VSCodeRestLogger};
+use crate::logger::{DevNullLogger, LogEntry, VSCodeRestLogger};
 use crate::{
     config::{Config, LoggerType},
     logger::RequestResponseLogger,
@@ -47,9 +47,10 @@ async fn main() {
         .expect("Unable to resolve target address")[0];
 
     let log_sender = match config.logger {
+        LoggerType::DevNull => log_channel(DevNullLogger),
         LoggerType::Vscode => log_channel(VSCodeRestLogger::from_stdout(io::stdout())),
     };
-    let logger = ReplayLogger::new(log_sender, target_address);
+    let logger = ReplayLogger::new(log_sender, target_address, config.override_bearer_auth);
 
     let server = hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new())
         .preserve_header_case(true)
@@ -106,6 +107,7 @@ fn log_channel<L: RequestResponseLogger + 'static>(mut logger: L) -> Sender<LogE
 struct ReplayLogger {
     logger: Sender<LogEntry>,
     target: SocketAddr,
+    override_bearer_auth: Option<String>,
 }
 
 impl Service<Request<Incoming>> for ReplayLogger {
@@ -119,19 +121,34 @@ impl Service<Request<Incoming>> for ReplayLogger {
 }
 
 impl ReplayLogger {
-    fn new(logger: Sender<LogEntry>, target: SocketAddr) -> Self {
-        Self { logger, target }
+    fn new(
+        logger: Sender<LogEntry>,
+        target: SocketAddr,
+        override_bearer_auth: Option<String>,
+    ) -> Self {
+        Self {
+            logger,
+            target,
+            override_bearer_auth,
+        }
     }
 
     async fn handle_request(
         self,
         req: Request<Incoming>,
     ) -> Result<Response<Full<Bytes>>, hyper::Error> {
-        let request = {
+        let mut request = {
             let (parts, body) = req.into_parts();
             let full_body_bytes = body.collect().await?.to_bytes();
             Request::from_parts(parts, Full::from(full_body_bytes.clone()))
         };
+
+        if let Some(token) = &self.override_bearer_auth {
+            request.headers_mut().insert(
+                http::header::AUTHORIZATION,
+                http::HeaderValue::from_str(&format!("Bearer {}", token)).unwrap(),
+            );
+        }
 
         let response = {
             let response = proxy(self.target, request.clone()).await?;
@@ -264,12 +281,69 @@ async fn tunnel(upgraded: Upgraded, addr: String) -> std::io::Result<()> {
     Ok(())
 }
 
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::str::FromStr;
 
-//     #[tokio::test]
-//     async fn it_forwards_and_logs_requests() {
-//         let (logger, _handle) = create_logger();
-//     }
-// }
+    #[test]
+    fn it_overrides_auth_with_bearer_auth() {
+        let uri = http::Uri::from_str("http://example.com/api/test").unwrap();
+
+        // Test 1: Setting auth header on request without one
+        let mut request: Request<Full<Bytes>> = Request::builder()
+            .method("GET")
+            .uri(uri.clone())
+            .body(Full::new(Bytes::new()))
+            .unwrap();
+
+        assert!(request.headers().get(http::header::AUTHORIZATION).is_none());
+
+        let test_token = "test-secret-token-12345";
+        if let Some(token) = Some(test_token.to_string()) {
+            request.headers_mut().insert(
+                http::header::AUTHORIZATION,
+                http::HeaderValue::from_str(&format!("Bearer {}", token)).unwrap(),
+            );
+        }
+
+        assert_eq!(
+            request.headers().get(http::header::AUTHORIZATION).unwrap(),
+            "Bearer test-secret-token-12345"
+        );
+
+        // Test 2: Replacing existing auth header
+        let mut request: Request<Full<Bytes>> = Request::builder()
+            .method("GET")
+            .uri(uri.clone())
+            .header(http::header::AUTHORIZATION, "Bearer old-token")
+            .body(Full::new(Bytes::new()))
+            .unwrap();
+
+        assert_eq!(
+            request.headers().get(http::header::AUTHORIZATION).unwrap(),
+            "Bearer old-token"
+        );
+
+        let new_token = "new-test-token";
+        if let Some(token) = Some(new_token.to_string()) {
+            request.headers_mut().insert(
+                http::header::AUTHORIZATION,
+                http::HeaderValue::from_str(&format!("Bearer {}", token)).unwrap(),
+            );
+        }
+
+        assert_eq!(
+            request.headers().get(http::header::AUTHORIZATION).unwrap(),
+            "Bearer new-test-token"
+        );
+
+        // Test 3: Bearer token format validation
+        let jwt_token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9";
+        let expected = format!("Bearer {}", jwt_token);
+        let header_value = http::HeaderValue::from_str(&expected).unwrap();
+
+        assert_eq!(header_value, expected);
+        assert!(header_value.to_str().unwrap().starts_with("Bearer "));
+    }
+}
