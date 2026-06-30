@@ -1,6 +1,7 @@
 # Request Logging Proxy
 
 [![CI](https://github.com/geo-engine/request-logging-proxy/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/geo-engine/request-logging-proxy/actions/workflows/ci.yml?branch=main)
+[![Crates.io](https://img.shields.io/crates/v/request-logging-proxy.svg)](https://crates.io/crates/request-logging-proxy)
 
 A proxy server that forwards requests and responses and logs them to stdout.
 
