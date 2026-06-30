@@ -16,18 +16,24 @@ pub struct Config {
     /// The type of logger to use (e.g., "vscode")
     #[arg(long, default_value_t = LoggerType::Vscode, env = "LOGGER")]
     pub logger: LoggerType,
+
+    /// Overrides the authorization header and sends a Bearer authentication token (e.g., "TOKEN")
+    #[arg(long, env = "OVERRIDE_BEARER_AUTH")]
+    pub override_bearer_auth: Option<String>,
 }
 
 #[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LoggerType {
     #[default]
     Vscode,
+    DevNull,
 }
 
 impl std::fmt::Display for LoggerType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             LoggerType::Vscode => write!(f, "vscode"),
+            LoggerType::DevNull => write!(f, "/dev/null"),
         }
     }
 }
