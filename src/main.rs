@@ -1,13 +1,9 @@
 use bytes::Bytes;
 use http::Method;
-use http_body_util::combinators::BoxBody;
-use http_body_util::{BodyExt, Empty, Full};
-use hyper::upgrade::Upgraded;
-use hyper::{Request, Response, body::Incoming, service::Service};
+use http_body_util::{BodyExt, Empty, Full, combinators::BoxBody};
+use hyper::{Request, Response, body::Incoming, service::Service, upgrade::Upgraded};
 use hyper_util::rt::TokioIo;
-use std::io;
-use std::net::SocketAddr;
-use std::pin::Pin;
+use std::{io, net::SocketAddr, pin::Pin};
 use tokio::{
     net::{TcpListener, TcpStream},
     sync::mpsc::{Sender, channel},
@@ -73,9 +69,9 @@ async fn main() {
                 });
             },
 
-            _ = &mut signal => {
+            signal_str = &mut signal => {
                 drop(listener);
-                eprintln!("Graceful shutdown signal received");
+                eprintln!("Graceful shutdown signal received: {}", signal_str);
                 // stop the accept loop
                 break;
             }
@@ -169,12 +165,21 @@ impl ReplayLogger {
     }
 }
 
-/// Wait for the shutdown signal (CTRL+C)
-async fn shutdown_signal() {
-    // Wait for the CTRL+C signal
-    tokio::signal::ctrl_c()
-        .await
-        .expect("failed to install CTRL+C signal handler");
+/// Wait for the shutdown signal (CTRL+C or SIGTERM)
+async fn shutdown_signal() -> &'static str {
+    use tokio::signal::unix::{SignalKind, signal};
+
+    let mut sigterm =
+        signal(SignalKind::terminate()).expect("failed to install SIGTERM signal handler");
+
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {
+            "SIGINT"
+        }
+        _ = sigterm.recv() => {
+            "SIGTERM"
+        }
+    }
 }
 
 /// Received an HTTP request like:
