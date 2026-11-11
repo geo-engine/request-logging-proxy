@@ -66,8 +66,10 @@ send -I "$PROXY/collections"                      # HEAD: no body
 send "$PROXY/cached"                              # 304: no body
 rm -f "$OUT/upload.tif"
 
-# Give the logger time to write the last entries before shutting down.
-sleep 0.5
+# The proxy writes all pending log entries before it exits.
+proxy_pid="${pids[1]}"
+kill -TERM "$proxy_pid"
+wait "$proxy_pid" || true
 cleanup
 wait 2>/dev/null || true
 
