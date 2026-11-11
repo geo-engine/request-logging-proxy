@@ -48,8 +48,10 @@ unwrap_used = "warn"
 [dependencies]
 anyhow = "1.0"
 async-trait = "0.1"
+brotli = "9.1.1"
 bytes = "1.12"
 clap = { version = "4.6", features = ["env", "derive"] }
+encoding_rs = "0.8.44"
 flate2 = "1.1"
 http = "1.5"
 http-body-util = "0.1"
@@ -59,8 +61,10 @@ hyper-util = { version = "0.1", features = [
     "server-auto",
     "server-graceful",
 ] }
+ruzstd = "0.9.1"
 serde_json = "1.0"
-tokio = { version = "1.53", features = ["macros", "rt-multi-thread", "signal"] }
+sha2 = "0.11.1"
+tokio = { version = "1.53", features = ["fs", "macros", "net", "rt-multi-thread", "signal"] }
 url = { version = "2.5", features = [] }
 
 [dev-dependencies]

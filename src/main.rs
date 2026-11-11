@@ -9,12 +9,13 @@ use tokio::{
     sync::mpsc::{Sender, channel},
 };
 
-use crate::logger::{DevNullLogger, LogEntry, VSCodeRestLogger};
+use crate::logger::{DevNullLogger, LogEntry, VSCodeRestLogger, VSCodeRestLoggerOptions};
 use crate::{
     config::{Config, LoggerType},
     logger::RequestResponseLogger,
 };
 
+mod body;
 mod config;
 mod logger;
 
@@ -44,7 +45,18 @@ async fn main() {
 
     let log_sender = match config.logger {
         LoggerType::DevNull => log_channel(DevNullLogger),
-        LoggerType::Vscode => log_channel(VSCodeRestLogger::from_stdout(io::stdout())),
+        LoggerType::Vscode => {
+            if let Some(dir) = &config.binary_body_dir {
+                std::fs::create_dir_all(dir).expect("Unable to create binary body directory");
+            }
+            log_channel(VSCodeRestLogger::from_stdout(
+                io::stdout(),
+                VSCodeRestLoggerOptions {
+                    max_text_body_bytes: config.max_logged_body_bytes,
+                    binary_body_dir: config.binary_body_dir,
+                },
+            ))
+        }
     };
     let logger = ReplayLogger::new(log_sender, target_address, config.override_bearer_auth);
 
