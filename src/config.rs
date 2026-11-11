@@ -20,6 +20,16 @@ pub struct Config {
     /// Overrides the authorization header and sends a Bearer authentication token (e.g., "TOKEN")
     #[arg(long, env = "OVERRIDE_BEARER_AUTH")]
     pub override_bearer_auth: Option<String>,
+
+    /// Maximum number of bytes of a textual body to log; longer bodies are truncated
+    #[arg(long, env = "MAX_LOGGED_BODY_BYTES")]
+    pub max_logged_body_bytes: Option<usize>,
+
+    /// Directory to store binary bodies in; the log references the files.
+    /// Relative paths are written as given, so they resolve relative to the log file
+    /// if the log is written to a file in the current working directory.
+    #[arg(long, env = "BINARY_BODY_DIR")]
+    pub binary_body_dir: Option<std::path::PathBuf>,
 }
 
 #[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq, Default)]

@@ -3,18 +3,23 @@ use http::Method;
 use http_body_util::{BodyExt, Empty, Full, combinators::BoxBody};
 use hyper::{Request, Response, body::Incoming, service::Service, upgrade::Upgraded};
 use hyper_util::rt::TokioIo;
-use std::{io, net::SocketAddr, pin::Pin};
+use std::{io, net::SocketAddr, pin::Pin, time::Duration};
 use tokio::{
     net::{TcpListener, TcpStream},
-    sync::mpsc::{Sender, channel},
+    sync::{
+        mpsc::{Sender, channel},
+        oneshot,
+    },
+    task::JoinHandle,
 };
 
-use crate::logger::{DevNullLogger, LogEntry, VSCodeRestLogger};
+use crate::logger::{DevNullLogger, LogEntry, VSCodeRestLogger, VSCodeRestLoggerOptions};
 use crate::{
     config::{Config, LoggerType},
     logger::RequestResponseLogger,
 };
 
+mod body;
 mod config;
 mod logger;
 
@@ -22,6 +27,8 @@ type ClientBuilder = hyper::client::conn::http1::Builder;
 
 const FALLBACK_TARGET_PORT: u16 = 80;
 const CHANNEL_BUFFER_SIZE: usize = 64;
+/// How long to wait for open connections to finish on shutdown.
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The main entry point of the Request Logging Proxy application.
 /// It sets up the proxy server, handles incoming connections,
@@ -42,11 +49,26 @@ async fn main() {
         .socket_addrs(|| Some(FALLBACK_TARGET_PORT))
         .expect("Unable to resolve target address")[0];
 
-    let log_sender = match config.logger {
+    let log_channel = match config.logger {
         LoggerType::DevNull => log_channel(DevNullLogger),
-        LoggerType::Vscode => log_channel(VSCodeRestLogger::from_stdout(io::stdout())),
+        LoggerType::Vscode => {
+            if let Some(dir) = &config.binary_body_dir {
+                std::fs::create_dir_all(dir).expect("Unable to create binary body directory");
+            }
+            log_channel(VSCodeRestLogger::from_stdout(
+                io::stdout(),
+                VSCodeRestLoggerOptions {
+                    max_text_body_bytes: config.max_logged_body_bytes,
+                    binary_body_dir: config.binary_body_dir,
+                },
+            ))
+        }
     };
-    let logger = ReplayLogger::new(log_sender, target_address, config.override_bearer_auth);
+    let logger = ReplayLogger::new(
+        log_channel.sender.clone(),
+        target_address,
+        config.override_bearer_auth,
+    );
 
     let server = hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new())
         .preserve_header_case(true)
@@ -77,24 +99,85 @@ async fn main() {
             }
         }
     }
+
+    eprintln!("Waiting for open connections to finish (press CTRL+C again to skip)...");
+    tokio::select! {
+        () = graceful.shutdown() => {}
+        () = tokio::time::sleep(SHUTDOWN_TIMEOUT) => {
+            eprintln!("Timed out after {SHUTDOWN_TIMEOUT:?} waiting for open connections");
+        }
+        signal_str = shutdown_signal() => {
+            eprintln!("Second shutdown signal received: {signal_str}");
+        }
+    }
+
+    drop(logger);
+    log_channel.close().await;
+    eprintln!("All log entries written");
+}
+
+/// A channel to a background task that writes log entries.
+struct LogChannel {
+    sender: Sender<LogEntry>,
+    close: oneshot::Sender<()>,
+    task: JoinHandle<()>,
+}
+
+impl LogChannel {
+    /// Stop accepting new entries and wait until all queued entries are written.
+    async fn close(self) {
+        let Self {
+            sender,
+            close,
+            task,
+        } = self;
+        drop(sender);
+        // the task may already have finished if all senders are gone
+        let _ = close.send(());
+        if let Err(e) = task.await {
+            eprintln!("Logger task failed: {e}");
+        }
+    }
 }
 
 /// Create a logging channel that processes request/response pairs sequentially.
 /// This makes sure that log entries are not interleaved.
 /// The channel spawns a background task that receives request/response pairs
 /// and calls the provided logger's `log_request_response` method.
-fn log_channel<L: RequestResponseLogger + 'static>(mut logger: L) -> Sender<LogEntry> {
-    let (tx, mut rx) = channel::<LogEntry>(CHANNEL_BUFFER_SIZE);
+fn log_channel<L: RequestResponseLogger + 'static>(mut logger: L) -> LogChannel {
+    let (sender, mut rx) = channel::<LogEntry>(CHANNEL_BUFFER_SIZE);
+    let (close, mut close_rx) = oneshot::channel::<()>();
 
-    tokio::spawn(async move {
-        while let Some(entry) = rx.recv().await {
-            if let Err(e) = logger.log_request_response(entry).await {
-                eprintln!("Error logging request/response: {e:?}");
+    let task = tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                entry = rx.recv() => match entry {
+                    Some(entry) => log_entry(&mut logger, entry).await,
+                    // all senders are gone, so nothing is queued anymore
+                    None => return,
+                },
+                _ = &mut close_rx => break,
             }
+        }
+
+        // Reject new entries, but write all entries that are already queued.
+        rx.close();
+        while let Some(entry) = rx.recv().await {
+            log_entry(&mut logger, entry).await;
         }
     });
 
-    tx
+    LogChannel {
+        sender,
+        close,
+        task,
+    }
+}
+
+async fn log_entry<L: RequestResponseLogger>(logger: &mut L, entry: LogEntry) {
+    if let Err(e) = logger.log_request_response(entry).await {
+        eprintln!("Error logging request/response: {e:?}");
+    }
 }
 
 /// A service that proxies requests to a target address
@@ -153,13 +236,17 @@ impl ReplayLogger {
             Response::from_parts(parts, Full::from(full_body_bytes.clone()))
         };
 
-        self.logger
+        if self
+            .logger
             .send(LogEntry {
                 request,
                 response: response.clone(),
             })
             .await
-            .unwrap();
+            .is_err()
+        {
+            eprintln!("Logger is shut down, dropping log entry");
+        }
 
         Ok(response)
     }
